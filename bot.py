@@ -3,63 +3,80 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import sqlite3
 import requests
 
-# KONFIGURASI ELITE
+# KONFIGURASI
 BOT_TOKEN = '8867256199:AAHAp_rvQxiyZkT7xlYYkSo85-OrzQydv5Y'
 API_KEY_OTP = '922a0af8d090b32ee2e6114a6e572799'
 ADMIN_ID = 6903958589 
 ADMIN_USERNAME = "@putraisalwayshappy"
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# DB SETUP
+# DATABASE
 conn = sqlite3.connect('nokos.db', check_same_thread=False)
 c = conn.cursor()
 c.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, saldo INTEGER)')
 conn.commit()
 
-# FUNGSI DEPOSIT & SALDO
+# FUNGSI API
+def panggil_api(endpoint, params=None):
+    url = f"https://api.jasaotp.id/v2/{endpoint}"
+    params = params or {}
+    params['api_key'] = API_KEY_OTP
+    try: return requests.get(url, params=params).json()
+    except: return {"success": False}
+
+# FUNGSI SALDO
 def get_saldo(uid):
     c.execute('SELECT saldo FROM users WHERE id=?', (uid,))
     res = c.fetchone()
     return res[0] if res else 0
 
+# --- HANDLER START ---
 @bot.message_handler(commands=['start'])
 def start(message):
     uid = message.from_user.id
-    saldo = get_saldo(uid)
     text = (f"✨ *Halo Kak! Selamat datang di Nokos Pro Elite!*\n\n"
-            f"Layanan OTP tercepat untuk WhatsApp & lainnya.\n"
-            f"💰 *Saldo Anda:* Rp {saldo:,}\n\n"
+            f"💰 *Saldo Anda:* Rp {get_saldo(uid):,}\n\n"
             f"Pilih fitur favorit di bawah ya: 👇")
-    
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("🛒 Order Nomor WA", callback_data="order_v1"))
+    markup.add(InlineKeyboardButton("🛒 Order Nomor WA", callback_data="order_wa"))
     markup.add(InlineKeyboardButton("💳 Isi Saldo (Deposit)", callback_data="menu_deposit"))
     markup.add(InlineKeyboardButton("🆘 Bantuan & Tutorial", callback_data="bantuan"))
     bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode='Markdown')
 
-# --- FITUR ADMIN (KODE 2705) ---
+# --- HANDLER ADMIN (/addsaldo [ID] [JML] 2705) ---
 @bot.message_handler(commands=['addsaldo'])
-def add_saldo(message):
-    # Keamanan: Harus ID Bos dan pakai kode 2705 di pesan
+def admin_add(message):
     if message.from_user.id == ADMIN_ID and "2705" in message.text:
         args = message.text.split()
-        uid_target, jumlah = int(args[1]), int(args[2])
-        c.execute('UPDATE users SET saldo = saldo + ? WHERE id = ?', (jumlah, uid_target))
+        uid, jml = int(args[1]), int(args[2])
+        c.execute('INSERT OR IGNORE INTO users (id, saldo) VALUES (?, 0)', (uid,))
+        c.execute('UPDATE users SET saldo = saldo + ? WHERE id = ?', (jml, uid))
         conn.commit()
-        bot.reply_to(message, f"✅ *Sukses!* Saldo ID {uid_target} ditambah Rp {jumlah:,}")
+        bot.reply_to(message, f"✅ Sukses! Saldo {uid} ditambah Rp {jml:,}")
 
-# --- CALLBACK MENU ---
+# --- CALLBACKS ---
 @bot.callback_query_handler(func=lambda call: True)
 def callback(call):
-    if call.data == "bantuan":
-        text = (f"🆘 *TUTORIAL NOKOS PRO*\n\n"
-                f"1. *Deposit:* Klik 'Isi Saldo', pilih nominal, transfer ke Permata, kirim bukti ke {ADMIN_USERNAME}.\n"
-                f"2. *Order:* Klik 'Order Nomor', saldo akan terpotong, lalu masukkan nomor ke WA.\n"
-                f"3. *OTP:* Klik tombol 'Cek OTP' setelah SMS terkirim.\n"
-                f"4. *Refund:* Jika OTP tidak masuk, klik 'Cancel Order'. Saldo otomatis balik!\n\n"
-                f"Ada kendala? Langsung curhat aja ke admin: {ADMIN_USERNAME} ya kak! 😊")
-        bot.send_message(call.message.chat.id, text, parse_mode='Markdown')
+    uid = call.from_user.id
+    if call.data == "order_wa":
+        res = panggil_api("order.php", {'negara': 6, 'layanan': 'wa', 'operator': 'any'})
+        if res.get('success'):
+            bot.send_message(call.message.chat.id, f"✅ *Order Sukses!*\nNomor: `{res['data']['number']}`\nOrder ID: `{res['data']['order_id']}`")
+        else:
+            bot.send_message(call.message.chat.id, "Stok habis / API Error.")
+            
+    elif call.data == "menu_deposit":
+        markup = InlineKeyboardMarkup(row_width=2)
+        for n in [5000, 10000, 20000, 50000]:
+            markup.add(InlineKeyboardButton(f"Rp {n:,}", callback_data=f"depo_{n}"))
+        bot.edit_message_text(f"Pilih nominal deposit (ID Anda: `{uid}`):", call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode='Markdown')
 
-# [Fungsi Order, Cek OTP, Cancel sudah termasuk di versi sebelumnya]
+    elif call.data.startswith("depo_"):
+        n = call.data.split("_")[1]
+        bot.send_message(call.message.chat.id, f"🏦 *TRANSFER*\nNominal: Rp {n}\nRek: `8985082065151676` (Permata)\n\nKirim bukti ke {ADMIN_USERNAME}")
+
+    elif call.data == "bantuan":
+        bot.send_message(call.message.chat.id, "Bantuan: Chat langsung ke @putraisalwayshappy ya Kak! 😊")
+
 bot.remove_webhook()
 bot.infinity_polling()

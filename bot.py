@@ -1,66 +1,96 @@
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+import os
 import requests
 
-# Konfigurasi Bot
-BOT_TOKEN = "8341181663:AAG4a_EVeF5Lw1K3Kdj1j5Zn35eKJS643tw"
-API_KEY_OTP = "136931718169904207945638210331464426570643606"
-ADMIN_CODE = "2705"
-
+# Konfigurasi Token dan API
+# Token Bot Telegram Baru
+BOT_TOKEN = '8867256199:AAHAp_rvQxiyZkT7xlYYkSo85-OrzQydv5Y'
 bot = telebot.TeleBot(BOT_TOKEN)
 
-def request_api(server, endpoint, params=None):
-    base_url = f"https://api.jasaotp.id/v{server}/"
-    params = params or {}
-    params['api_key'] = API_KEY_OTP
-    try:
-        response = requests.get(base_url + endpoint, params=params, timeout=10)
-        return response.json()
-    except:
-        return {"code": 500, "message": "Server tidak merespons"}
+# API Key Jasa OTP (Gunakan Environment Variable untuk keamanan di Railway)
+API_KEY_JASAOTP = os.environ.get('API_KEY_JASAOTP', 'MASUKKAN_API_KEY_JASAOTP_DI_SINI')
 
-@bot.message_handler(func=lambda message: message.text == ADMIN_CODE)
-def admin_panel(message):
-    saldo = request_api(1, "balance.php", {})
-    saldo_info = f"Rp {saldo['data']['saldo']:,}" if saldo and saldo.get("success") else "Gagal Cek"
-    bot.reply_to(message, f"🛠 *PANEL ADMIN*\n\n💰 Saldo API: *{saldo_info}*", parse_mode="Markdown")
+# Konfigurasi Endpoint Jasa OTP
+URL_SERVER_1 = "https://api.jasaotp.id/v1/"
+URL_SERVER_2 = "https://api.jasaotp.id/v2/"
+
+# Fungsi untuk memanggil API Saldo sebagai contoh pengecekan server
+def cek_saldo(url_server):
+    try:
+        response = requests.get(f"{url_server}balance.php?api_key={API_KEY_JASAOTP}")
+        data = response.json()
+        if data.get('status'):
+            return f"Rp {data.get('data', {}).get('balance', 0):,}"
+        return "Gagal mengambil saldo."
+    except Exception as e:
+        return f"Error: {e}"
 
 @bot.message_handler(commands=['start'])
-def start(message):
+def send_welcome(message):
+    user_name = message.from_user.first_name
+    user_id = message.from_user.id
+    
+    # Pesan sambutan dengan formatting Markdown yang rapi
+    text = (f"Halo, *{user_name}*! 👋\n\n"
+            f"Selamat datang di **Bot Nokos Pro**.\n"
+            f"ID Anda: `{user_id}`\n\n"
+            f"Pilih layanan server di bawah ini untuk memulai order nomor kosong atau informasi top-up:")
+    
+    # Membuat Inline Keyboard yang terlihat estetik
     markup = InlineKeyboardMarkup()
-    markup.row(InlineKeyboardButton("📱 Order Server 1", callback_data="order_1"),
-               InlineKeyboardButton("📱 Order Server 2", callback_data="order_2"))
-    markup.add(InlineKeyboardButton("💳 Info VA Permata", callback_data="topup"))
-    bot.send_message(message.chat.id, "Selamat datang di Bot Nokos Pro!", reply_markup=markup)
+    markup.row_width = 2
+    
+    # Tombol-tombol menu utama
+    btn_server1 = InlineKeyboardButton("📱 Order Server 1", callback_data="order_s1")
+    btn_server2 = InlineKeyboardButton("📱 Order Server 2", callback_data="order_s2")
+    btn_va = InlineKeyboardButton("💳 Info VA Permata", callback_data="info_va")
+    btn_help = InlineKeyboardButton("🆘 Bantuan", callback_data="bantuan")
+    
+    # Penempatan tata letak tombol
+    markup.add(btn_server1, btn_server2)
+    markup.add(btn_va)
+    markup.add(btn_help)
+    
+    bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode='Markdown')
 
 @bot.callback_query_handler(func=lambda call: True)
-def handle_query(call):
-    chat_id = call.message.chat.id
-    data = call.data
-    
-    if data.startswith("order_"):
-        server = 1 if data == "order_1" else 2
-        hasil = request_api(server, "order.php", {"negara": 6, "layanan": "wa", "operator": "any"})
-        if hasil and hasil.get("success"):
-            oid = hasil['data']['order_id']
-            markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton("🔍 Cek OTP", callback_data=f"cek_{server}_{oid}"))
-            markup.add(InlineKeyboardButton("❌ Refund", callback_data=f"cancel_{server}_{oid}"))
-            bot.send_message(chat_id, f"✅ Order Berhasil!\nID: `{oid}`\nNomor: `{hasil['data']['number']}`", reply_markup=markup, parse_mode="Markdown")
-        else:
-            bot.send_message(chat_id, f"❌ {hasil.get('message', 'Error')}")
-            
-    elif data.startswith("cek_"):
-        _, server, oid = data.split("_")
-        hasil = request_api(server, "sms.php", {"id": oid})
-        bot.reply_to(call.message, f"✨ OTP: `{hasil['data']['otp']}`" if hasil and hasil.get("success") else "⏳ Belum ada SMS.")
+def callback_query(call):
+    if call.data == "order_s1":
+        # Menghapus notifikasi loading di tombol
+        bot.answer_callback_query(call.id)
         
-    elif data.startswith("cancel_"):
-        _, server, oid = data.split("_")
-        hasil = request_api(server, "cancel.php", {"id": oid})
-        bot.reply_to(call.message, "✅ Refund Berhasil." if hasil and hasil.get("success") else "❌ Gagal refund.")
-        
-    elif data == "topup":
-        bot.send_message(chat_id, "🏦 Transfer ke VA Permata: `8985082065151676`", parse_mode="Markdown")
+        # Contoh eksekusi endpoint API Server 1
+        text_s1 = (f"🌐 **SERVER 1 AKTIF**\n\n"
+                   f"Endpoint: `{URL_SERVER_1}order.php`\n"
+                   f"Status: Siap menerima order.\n\n"
+                   f"_Silakan ketik kode layanan yang ingin diorder_ (Fitur masih dalam tahap pengembangan visual).")
+        bot.send_message(call.message.chat.id, text_s1, parse_mode='Markdown')
 
-bot.infinity_polling()
+    elif call.data == "order_s2":
+        bot.answer_callback_query(call.id)
+        
+        # Contoh eksekusi endpoint API Server 2
+        text_s2 = (f"🌐 **SERVER 2 AKTIF**\n\n"
+                   f"Endpoint: `{URL_SERVER_2}order.php`\n"
+                   f"Status: Siap menerima order.\n\n"
+                   f"_Silakan ketik kode layanan yang ingin diorder_ (Fitur masih dalam tahap pengembangan visual).")
+        bot.send_message(call.message.chat.id, text_s2, parse_mode='Markdown')
+
+    elif call.data == "info_va":
+        bot.answer_callback_query(call.id)
+        text_va = ("🏦 **Informasi Pembayaran / Top Up**\n\n"
+                   "Silakan transfer ke rekening Virtual Account berikut:\n\n"
+                   "**Bank Permata**\n"
+                   "`8985082065151676`\n\n"
+                   "_(Klik nomor di atas untuk menyalin otomatis)_")
+        bot.send_message(call.message.chat.id, text_va, parse_mode='Markdown')
+        
+    elif call.data == "bantuan":
+        bot.answer_callback_query(call.id)
+        bot.send_message(call.message.chat.id, "Jika Anda mengalami kendala saat order atau API lambat merespons, silakan hubungi admin.", parse_mode='Markdown')
+
+# Memastikan bot berjalan terus-menerus
+if __name__ == "__main__":
+    print("Bot Nokos Pro sedang berjalan...")
+    bot.infinity_polling()

@@ -14,6 +14,7 @@ bot = telebot.TeleBot(BOT_TOKEN)
 conn = sqlite3.connect('nokos.db', check_same_thread=False)
 c = conn.cursor()
 c.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, saldo INTEGER)')
+c.execute('CREATE TABLE IF NOT EXISTS orders (order_id TEXT PRIMARY KEY, uid INTEGER, harga INTEGER)')
 conn.commit()
 
 # FUNGSI API
@@ -24,7 +25,6 @@ def panggil_api(endpoint, params=None):
     try: return requests.get(url, params=params).json()
     except: return {"success": False}
 
-# FUNGSI SALDO
 def get_saldo(uid):
     c.execute('SELECT saldo FROM users WHERE id=?', (uid,))
     res = c.fetchone()
@@ -43,7 +43,7 @@ def start(message):
     markup.add(InlineKeyboardButton("🆘 Bantuan & Tutorial", callback_data="bantuan"))
     bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode='Markdown')
 
-# --- HANDLER ADMIN (/addsaldo [ID] [JML] 2705) ---
+# --- ADMIN ---
 @bot.message_handler(commands=['addsaldo'])
 def admin_add(message):
     if message.from_user.id == ADMIN_ID and "2705" in message.text:
@@ -61,22 +61,45 @@ def callback(call):
     if call.data == "order_wa":
         res = panggil_api("order.php", {'negara': 6, 'layanan': 'wa', 'operator': 'any'})
         if res.get('success'):
-            bot.send_message(call.message.chat.id, f"✅ *Order Sukses!*\nNomor: `{res['data']['number']}`\nOrder ID: `{res['data']['order_id']}`")
+            harga = 2000 # Contoh harga potong saldo
+            c.execute('UPDATE users SET saldo = saldo - ? WHERE id = ?', (harga, uid))
+            c.execute('INSERT INTO orders VALUES (?, ?, ?)', (res['data']['order_id'], uid, harga))
+            conn.commit()
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("🔄 Cek OTP", callback_data=f"cek_{res['data']['order_id']}"))
+            markup.add(InlineKeyboardButton("❌ Cancel & Refund", callback_data=f"refund_{res['data']['order_id']}"))
+            bot.send_message(call.message.chat.id, f"✅ *Order Sukses!*\nNomor: `{res['data']['number']}`\nOrder ID: `{res['data']['order_id']}`", reply_markup=markup, parse_mode='Markdown')
         else:
-            bot.send_message(call.message.chat.id, "Stok habis / API Error.")
-            
+            bot.answer_callback_query(call.id, "Stok habis!")
+
+    elif call.data.startswith("cek_"):
+        oid = call.data.split("_")[1]
+        res = panggil_api("status.php", {'order_id': oid})
+        bot.answer_callback_query(call.id, f"Status: {res.get('data', {}).get('sms', 'Menunggu SMS')}")
+
+    elif call.data.startswith("refund_"):
+        oid = call.data.split("_")[1]
+        c.execute('SELECT harga FROM orders WHERE order_id=?', (oid,))
+        harga = c.fetchone()
+        if harga:
+            c.execute('UPDATE users SET saldo = saldo + ? WHERE id = ?', (harga[0], uid))
+            c.execute('DELETE FROM orders WHERE order_id=?', (oid,))
+            conn.commit()
+            bot.answer_callback_query(call.id, "Refund berhasil!")
+            bot.edit_message_text("❌ Order Dibatalkan & Saldo Dikembalikan.", call.message.chat.id, call.message.message_id)
+
     elif call.data == "menu_deposit":
         markup = InlineKeyboardMarkup(row_width=2)
         for n in [5000, 10000, 20000, 50000]:
             markup.add(InlineKeyboardButton(f"Rp {n:,}", callback_data=f"depo_{n}"))
-        bot.edit_message_text(f"Pilih nominal deposit (ID Anda: `{uid}`):", call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode='Markdown')
+        bot.edit_message_text(f"Pilih nominal (ID: `{uid}`):", call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode='Markdown')
 
     elif call.data.startswith("depo_"):
         n = call.data.split("_")[1]
-        bot.send_message(call.message.chat.id, f"🏦 *TRANSFER*\nNominal: Rp {n}\nRek: `8985082065151676` (Permata)\n\nKirim bukti ke {ADMIN_USERNAME}")
+        bot.send_message(call.message.chat.id, f"🏦 Transfer Rp {n} ke Permata: `8985082065151676`. Bukti ke {ADMIN_USERNAME}", parse_mode='Markdown')
 
     elif call.data == "bantuan":
-        bot.send_message(call.message.chat.id, "Bantuan: Chat langsung ke @putraisalwayshappy ya Kak! 😊")
+        bot.send_message(call.message.chat.id, f"Bantuan: Hubungi {ADMIN_USERNAME} 😊")
 
 bot.remove_webhook()
 bot.infinity_polling()

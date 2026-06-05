@@ -1,185 +1,83 @@
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+import sqlite3
 import requests
 import os
 
-# ========================================================
-# KONEKSI & KONFIGURASI BOT
-# ========================================================
+# --- KONFIGURASI ---
 BOT_TOKEN = '8867256199:AAHAp_rvQxiyZkT7xlYYkSo85-OrzQydv5Y'
+API_KEY_OTP = '922a0af8d090b32ee2e6114a6e572799'
+ADMIN_ID = 6983958 # GANTI DENGAN ID TELEGRAM BOS
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# API Key JasaOTP 
-API_KEY_OTP = os.environ.get('API_KEY_OTP', '922a0af8d090b32ee2e6114a6e572799')
+# --- DATABASE ---
+conn = sqlite3.connect('nokos.db', check_same_thread=False)
+c = conn.cursor()
+c.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, saldo INTEGER)')
+conn.commit()
 
-# Username Telegram Admin
-ADMIN_USERNAME = "@putraisalwayshappy"
+# --- FUNGSI ---
+def get_saldo(user_id):
+    c.execute('SELECT saldo FROM users WHERE id=?', (user_id,))
+    res = c.fetchone()
+    return res[0] if res else 0
 
-# URL Dasar API Jasa OTP v1
-BASE_URL_V1 = "https://api.jasaotp.id/v1/"
+def update_saldo(user_id, jumlah):
+    c.execute('INSERT OR IGNORE INTO users (id, saldo) VALUES (?, 0)', (user_id,))
+    c.execute('UPDATE users SET saldo = saldo + ? WHERE id = ?', (jumlah, user_id))
+    conn.commit()
 
-# ========================================================
-# UTILITY FUNCTIONS
-# ========================================================
-
-def buat_pesanan_otp():
-    url = f"{BASE_URL_V1}order.php"
-    params = {
-        'api_key': API_KEY_OTP,
-        'negara': 6,
-        'layanan': 'wa',
-        'operator': 'any'
-    }
-    try:
-        response = requests.get(url, params=params)
-        return response.json()
-    except Exception as e:
-        return {"success": False, "message": f"Koneksi sistem terganggu: {e}"}
-
-def cek_otp_api(order_id):
-    url = f"{BASE_URL_V1}sms.php"
-    params = {
-        'api_key': API_KEY_OTP,
-        'id': order_id
-    }
-    try:
-        response = requests.get(url, params=params)
-        return response.json()
-    except Exception as e:
-        return {"success": False, "message": f"Koneksi sistem terganggu: {e}"}
-
-def batalkan_pesanan_api(order_id):
-    url = f"{BASE_URL_V1}cancel.php"
-    params = {
-        'api_key': API_KEY_OTP,
-        'id': order_id
-    }
-    try:
-        response = requests.get(url, params=params)
-        return response.json()
-    except Exception as e:
-        return {"success": False, "message": f"Koneksi sistem terganggu: {e}"}
-
-# ========================================================
-# HANDLER COMMANDS & CALLBACK BOT
-# ========================================================
-
+# --- HANDLER ---
 @bot.message_handler(commands=['start'])
-def send_welcome(message):
-    user_name = message.from_user.first_name
+def start(message):
     user_id = message.from_user.id
+    saldo = get_saldo(user_id)
     
-    # Copywriting Profesional untuk Sambutan
-    text = (f"Halo, *{user_name}*! Selamat datang di **Nokos Pro Premium** ✨\n\n"
-            f"Platform penyedia layanan Nomor Kosong (Nokos) otomatis, cepat, dan tepercaya untuk segala kebutuhan verifikasi aplikasi Anda.\n\n"
-            f"👤 **Informasi Akun Anda:**\n"
-            f"• ID Pengguna: `{user_id}`\n"
-            f"• Status: Terdaftar\n\n"
-            f"Silakan gunakan menu interaktif di bawah ini untuk memulai layanan kami:")
+    text = (f"✨ *Nokos Pro Premium*\n\n"
+            f"👤 ID: `{user_id}`\n"
+            f"💰 Saldo Anda: *Rp {saldo:,}*\n\n"
+            f"Pilih layanan di bawah:")
     
     markup = InlineKeyboardMarkup()
-    markup.row_width = 2
-    
-    btn_server1 = InlineKeyboardButton("📱 Order WhatsApp", callback_data="order_v1")
-    btn_va = InlineKeyboardButton("💳 Panduan Deposit", callback_data="info_va")
-    btn_help = InlineKeyboardButton("🆘 Pusat Bantuan & Q&A", callback_data="bantuan")
-    
-    markup.add(btn_server1)
-    markup.add(btn_va, btn_help)
-    
+    markup.add(InlineKeyboardButton("📱 Order WhatsApp (Rp 4.200)", callback_data="order_wa"))
+    markup.add(InlineKeyboardButton("💳 Panduan Deposit", callback_data="info_va"), 
+               InlineKeyboardButton("🆘 Bantuan", callback_data="bantuan"))
     bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode='Markdown')
 
+@bot.message_handler(commands=['addsaldo'])
+def cmd_add_saldo(message):
+    if message.from_user.id != ADMIN_ID: return
+    args = message.text.split()
+    if len(args) == 3:
+        update_saldo(int(args[1]), int(args[2]))
+        bot.reply_to(message, f"Berhasil menambah saldo {args[2]} untuk ID {args[1]}")
+
 @bot.callback_query_handler(func=lambda call: True)
-def callback_query(call):
-    # Eksekusi Order
-    if call.data == "order_v1":
-        bot.answer_callback_query(call.id, "Sistem sedang menyiapkan nomor Anda...")
-        res = buat_pesanan_otp()
+def callback(call):
+    user_id = call.from_user.id
+    if call.data == "order_wa":
+        harga = 4200 # 3000 (modal) + 1200 (profit)
+        if get_saldo(user_id) < harga:
+            bot.answer_callback_query(call.id, "Saldo tidak cukup!")
+            return
         
-        if res.get('success') == True:
-            data = res.get('data', {})
-            order_id = data.get('order_id')
-            nomor_hp = data.get('number')
-            
-            pesan_sukses = (f"✅ **ORDER BERHASIL DIBUAT**\n\n"
-                            f"📱 **Nomor Telepon:** `{nomor_hp}`\n"
-                            f"🆔 **ID Pesanan:** `{order_id}`\n\n"
-                            f"📌 **Langkah Selanjutnya:**\n"
-                            f"1. Masukkan nomor di atas ke aplikasi WhatsApp.\n"
-                            f"2. Kirim permintaan kode OTP dari aplikasi tersebut.\n"
-                            f"3. Klik tombol **'🔄 Cek OTP'** di bawah ini secara berkala hingga kode muncul.")
-            
-            action_markup = InlineKeyboardMarkup()
-            btn_cek = InlineKeyboardButton("🔄 Cek OTP", callback_data=f"cek_{order_id}")
-            btn_cancel = InlineKeyboardButton("❌ Cancel Order (Refund)", callback_data=f"can_{order_id}")
-            action_markup.add(btn_cek, btn_cancel)
-            
-            bot.send_message(call.message.chat.id, pesan_sukses, reply_markup=action_markup, parse_mode='Markdown')
+        # Panggil API JasaOTP
+        res = requests.get(f"https://api.jasaotp.id/v1/order.php?api_key={API_KEY_OTP}&negara=6&layanan=wa&operator=any").json()
+        if res.get('success'):
+            update_saldo(user_id, -harga)
+            nomor = res['data']['number']
+            order_id = res['data']['order_id']
+            bot.send_message(call.message.chat.id, f"✅ Order Sukses!\nNomor: `{nomor}`\nID: `{order_id}`")
         else:
-            pesan_gagal = res.get('message', 'Mohon maaf, stok nomor sedang kosong atau saldo Anda tidak mencukupi.')
-            bot.send_message(call.message.chat.id, f"❌ **ORDER GAGAL**\n\nKeterangan: {pesan_gagal}", parse_mode='Markdown')
+            bot.send_message(call.message.chat.id, "Stok habis / API Error.")
 
-    # Eksekusi Cek OTP
-    elif call.data.startswith("cek_"):
-        order_id = call.data.split("_")[1]
-        bot.answer_callback_query(call.id, "Melacak pesan masuk (SMS)...")
-        
-        res = cek_otp_api(order_id)
-        if res.get('success') == True:
-            data = res.get('data', {})
-            otp_code = data.get('otp')
-            
-            if otp_code:
-                bot.send_message(call.message.chat.id, f"🎉 **KODE OTP DITEMUKAN!**\n\n🔑 Kode Verifikasi Anda: `{otp_code}`\n\n_Terima kasih telah menggunakan Nokos Pro Premium._", parse_mode='Markdown')
-            else:
-                bot.send_message(call.message.chat.id, f"⏳ **STATUS:** Menunggu SMS masuk.\nID Pesanan: `{order_id}`\n\n_Sistem kami sedang melacak. Silakan tunggu 15-30 detik lalu klik tombol **Cek OTP** kembali._", parse_mode='Markdown')
-        else:
-            pesan_gagal = res.get('message', 'Gagal memuat OTP.')
-            bot.send_message(call.message.chat.id, f"⚠️ **PERHATIAN:** {pesan_gagal}", parse_mode='Markdown')
-
-    # Eksekusi Cancel / Refund
-    elif call.data.startswith("can_"):
-        order_id = call.data.split("_")[1]
-        bot.answer_callback_query(call.id, "Memproses pembatalan dan refund...")
-        
-        res = batalkan_pesanan_api(order_id)
-        if res.get('success') == True:
-            bot.send_message(call.message.chat.id, f"❌ **PESANAN DIBATALKAN**\n\nPesanan dengan ID `{order_id}` telah sukses dibatalkan. Saldo Anda telah otomatis dikembalikan *(Refund 100%)*.", parse_mode='Markdown')
-        else:
-            pesan_gagal = res.get('message', 'Pesanan tidak dapat dibatalkan (Mungkin OTP sudah terkirim atau waktu habis).')
-            bot.send_message(call.message.chat.id, f"⚠️ **GAGAL DIBATALKAN:** {pesan_gagal}", parse_mode='Markdown')
-
-    # Panduan Deposit Profesional
     elif call.data == "info_va":
-        bot.answer_callback_query(call.id)
-        text_va = ("💳 **PANDUAN DEPOSIT & PEMBAYARAN**\n\n"
-                   "Untuk melakukan pengisian saldo, silakan ikuti panduan praktis berikut:\n\n"
-                   "**Langkah 1: Lakukan Transfer**\n"
-                   "Kirimkan dana sesuai nominal yang Anda inginkan ke rekening Virtual Account resmi kami:\n"
-                   "🏦 **Bank Permata**\n"
-                   "🔢 `{8985082065151676}` _(Klik nomor untuk menyalin otomatis)_\n\n"
-                   "**Langkah 2: Simpan Bukti Pembayaran**\n"
-                   "Pastikan Anda melakukan *screenshot* atau menyimpan resi transfer yang sah.\n\n"
-                   "**Langkah 3: Konfirmasi ke Admin**\n"
-                   f"Kirimkan bukti pembayaran Anda melalui *chat* langsung ke Admin: {ADMIN_USERNAME}.\n\n"
-                   "**Langkah 4: Proses Saldo**\n"
-                   "Admin akan memverifikasi mutasi Anda, dan saldo akan langsung masuk ke akun Anda dalam waktu kurang dari 5 menit.")
-        bot.send_message(call.message.chat.id, text_va, parse_mode='Markdown')
-        
-    # Pusat Bantuan / Q&A
-    elif call.data == "bantuan":
-        bot.answer_callback_query(call.id)
-        text_help = ("🆘 **PUSAT BANTUAN & Q&A**\n\n"
-                     "**Q: Bagaimana cara kerja bot ini?**\n"
-                     "A: Bot ini menyewakan nomor virtual untuk menerima SMS OTP. Anda cukup klik tombol 'Order', masukkan nomornya ke aplikasi pendaftaran, lalu klik 'Cek OTP' untuk melihat kodenya.\n\n"
-                     "**Q: Berapa lama waktu tunggu SMS OTP masuk?**\n"
-                     "A: Normalnya berkisar antara 10 hingga 60 detik tergantung dari *provider* aplikasi yang Anda daftarkan.\n\n"
-                     "**Q: Bagaimana jika kode OTP tidak kunjung masuk?**\n"
-                     "A: Jika sudah lebih dari 3 menit kode tidak masuk, silakan klik tombol **'❌ Cancel Order'**. Saldo Anda akan otomatis dikembalikan *(Refund)* ke akun Anda tanpa potongan apa pun.\n\n"
-                     f"📞 **Butuh Bantuan Teknis?**\n"
-                     f"Tim kami siap membantu Anda. Silakan hubungi langsung: {ADMIN_USERNAME}")
-        bot.send_message(call.message.chat.id, text_help, parse_mode='Markdown')
+        text = ("🏦 *PANDUAN DEPOSIT*\n\n"
+                "Transfer ke Bank Permata:\n`8985082065151676`\n\n"
+                "Konfirmasi ke Admin: @putraisalwayshappy")
+        bot.send_message(call.message.chat.id, text, parse_mode='Markdown')
 
-if __name__ == "__main__":
-    print("Bot Nokos Pro Premium berjalan lancar...")
-    bot.infinity_polling()
+    elif call.data == "bantuan":
+        bot.send_message(call.message.chat.id, "Butuh bantuan? Hubungi: @putraisalwayshappy")
+
+bot.infinity_polling()

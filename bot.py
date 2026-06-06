@@ -1,5 +1,3 @@
-hayaperbaiki ini berarti 
-
 import telebot, sqlite3, requests, time, threading, os
 from datetime import datetime
 
